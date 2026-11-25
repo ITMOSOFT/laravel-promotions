@@ -2,6 +2,7 @@
 
 namespace ItmoSoft\Promotions\Tests\Unit;
 
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 use ItmoSoft\Promotions\Exceptions\PromotionException;
@@ -18,6 +19,14 @@ class PromotionServiceTest extends TestCase
         $this->app['db']->purge('testing');
         $this->loadMigrationsFrom(__DIR__.'/../../database/migrations');
         Schema::create('users', function (Blueprint $table) { $table->id(); $table->timestamps(); });
+    }
+
+    protected function user(): Model
+    {
+        return new class extends Model {
+            protected $table = 'users';
+            protected $guarded = [];
+        };
     }
 
     public function test_percentage_discount_is_capped_and_rounded(): void
@@ -39,10 +48,10 @@ class PromotionServiceTest extends TestCase
         app(PromotionService::class)->calculate($promotion, 100, ['region' => 'US']);
     }
 
-    public function test_redeem_records_a_redemption(): void
+    public function test_redeem_records_a_redemption_and_trims_order_reference(): void
     {
         $promotion = Promotion::query()->create(['name' => 'Welcome', 'code' => 'WELCOME', 'type' => 'percentage', 'value' => 10, 'is_active' => true]);
-        $redemption = app(PromotionService::class)->redeem($promotion, 'ORDER-100', 100);
+        $redemption = app(PromotionService::class)->redeem($promotion, ' ORDER-100 ', 100);
         self::assertSame('10.00', $redemption->discount_amount);
         self::assertSame('ORDER-100', $redemption->order_reference);
     }
@@ -54,5 +63,88 @@ class PromotionServiceTest extends TestCase
         $service->redeem($promotion, 'ORDER-1', 100);
         $this->expectException(PromotionException::class);
         $service->redeem($promotion, 'ORDER-2', 100);
+    }
+
+    public function test_per_customer_limit_requires_customer(): void
+    {
+        $promotion = Promotion::query()->create([
+            'name' => 'Customer limited',
+            'type' => 'fixed',
+            'value' => 5,
+            'usage_limit_per_customer' => 1,
+            'is_active' => true,
+        ]);
+
+        $this->expectException(PromotionException::class);
+        $this->expectExceptionMessage('persisted customer is required');
+
+        app(PromotionService::class)->redeem($promotion, 'ORDER-1', 100);
+    }
+
+    public function test_per_customer_limit_rejects_unsaved_customer(): void
+    {
+        $promotion = Promotion::query()->create([
+            'name' => 'Customer limited',
+            'type' => 'fixed',
+            'value' => 5,
+            'usage_limit_per_customer' => 1,
+            'is_active' => true,
+        ]);
+
+        $this->expectException(PromotionException::class);
+        $this->expectExceptionMessage('customer must be persisted');
+
+        app(PromotionService::class)->redeem($promotion, 'ORDER-1', 100, $this->user());
+    }
+
+    public function test_per_customer_usage_limit_is_enforced(): void
+    {
+        $promotion = Promotion::query()->create([
+            'name' => 'Customer limited',
+            'type' => 'fixed',
+            'value' => 5,
+            'usage_limit_per_customer' => 1,
+            'is_active' => true,
+        ]);
+        $customer = $this->user();
+        $customer->save();
+
+        $service = app(PromotionService::class);
+        $service->redeem($promotion, 'ORDER-1', 100, $customer);
+
+        $this->expectException(PromotionException::class);
+        $service->redeem($promotion, 'ORDER-2', 100, $customer);
+    }
+
+    public function test_duplicate_order_reference_is_rejected_as_domain_error(): void
+    {
+        $promotion = Promotion::query()->create([
+            'name' => 'Welcome',
+            'type' => 'fixed',
+            'value' => 5,
+            'is_active' => true,
+        ]);
+        $service = app(PromotionService::class);
+        $service->redeem($promotion, 'ORDER-1', 100);
+
+        $this->expectException(PromotionException::class);
+        $this->expectExceptionMessage('already been redeemed');
+
+        $service->redeem($promotion, ' ORDER-1 ', 100);
+    }
+
+    public function test_unsaved_promotion_cannot_be_calculated(): void
+    {
+        $promotion = new Promotion([
+            'name' => 'Unsaved',
+            'type' => 'fixed',
+            'value' => 5,
+            'is_active' => true,
+        ]);
+
+        $this->expectException(PromotionException::class);
+        $this->expectExceptionMessage('must be persisted');
+
+        app(PromotionService::class)->calculate($promotion, 100);
     }
 }

@@ -51,16 +51,18 @@ $redemption = $service->redeem(
     promotion: $promotion,
     orderReference: 'ORDER-1001',
     subtotal: 120.00,
-    customer: $user, // optional Eloquent model
+    customer: $user, // optional unless a per-customer limit is configured
     context: ['region' => 'PK', 'customer_tier' => 'gold'],
 );
 ```
 
-`redeem()` executes in a database transaction, locks the promotion row while checking usage caps, and records a unique `(promotion_id, order_reference)` redemption. Handle `PromotionException` as a validation failure. Database row locks depend on the database engine; SQLite does not provide production-equivalent row-level locking.
+`redeem()` executes in a database transaction, locks the promotion row while checking usage caps, and records a unique `(promotion_id, order_reference)` redemption. Order references are trimmed before storage. A repeated reference for the same promotion raises `PromotionException`; callers should treat this as an already-processed order rather than retrying it as a new redemption.
+
+When `usage_limit_per_customer` is configured, a persisted customer model is mandatory. Any customer model supplied to `redeem()` must be persisted. Database row locks depend on the database engine; SQLite does not provide production-equivalent row-level locking.
 
 ## Eligible products or other models
 
-A promotion can be attached to arbitrary Eloquent models through the `promotionables` morph pivot. An empty target list means no item-level restriction. Pass the relevant models to `calculate()` or `redeem()`:
+A promotion can be attached to arbitrary Eloquent models through the `promotionables` morph pivot. An empty target list means no item-level restriction. Pass the relevant persisted models to `calculate()` or `redeem()`:
 
 ```php
 DB::table('promotion_promotionables')->insert([
@@ -81,7 +83,7 @@ The table name above assumes the default prefix. Prefer your app's morph-map ali
 - `minimum_order_amount`: minimum eligible subtotal.
 - `starts_at` / `ends_at`: inclusive schedule boundaries.
 - `usage_limit`: total redemption cap.
-- `usage_limit_per_customer`: cap per polymorphic customer.
+- `usage_limit_per_customer`: cap per persisted polymorphic customer.
 - `maximum_discount_amount`: optional discount ceiling.
 
 ## Important boundaries
@@ -92,7 +94,8 @@ This package calculates and records promotion discounts only. It does not implem
 
 ```bash
 composer install
-vendor/bin/phpunit
+composer validate --no-check-publish
+composer test
 ```
 
 ## License
